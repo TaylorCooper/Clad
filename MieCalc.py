@@ -38,51 +38,56 @@
      --------------------------------------------------------------
 """
 
-from numpy import *
-import cv2, os, string, shutil, csv, time, sys
+from numpy import * # Ugly but done to save time / avoid reworking bhmie
+import os, string, shutil, csv, time, sys
 import matplotlib.pyplot as plt
 import matplotlib.ticker as tkr
 from pylab import * # plotting tools
 
-from numpy import *
+# Require for 3D plot
+from mpl_toolkits.mplot3d import axes3d, Axes3D
 
+DEBUG = False
 
 class mieCalc():
     """
     Description: Integrates amplitude functions
-    Input: .MOV
-    Output: Filtered and contact angle plots
+    Input: wavelength in um, diamter in um, complex index of refrac.
+    Methods:
+        bhmie - Calculate amplitude functions and extinction coefficients
+        ampFuncPlotter - Plots amplitude functions
+        xyIntensityPlotter - Plots surface indicating 
     """
     
-    def __init__(self):
-            """ Initial parameters for mieCalc
-            Input:
-            Output:  
+    def __init__(self, path, wavelength=0.65, diameter=1.0, index=1.6+0.1j):
+            """ Init method                 
             """
             
-            self.wavelength = 0.65 # Laser wavelength in um
-            self.diameter = 1.0 # Particle diameter in um
+            self.path = path # Working directory
+            
+            self.wavelength = wavelength # Laser wavelength in um
+            self.diameter = diameter # Particle diameter in um
             self.x = pi*self.diameter/self.wavelength
-            self.complexIndex = 1.6+0.01j
+            self.complexIndex = index
             self.nang = 1000 # Max number of angles = 1000            
             
             # Geometry parameters
             self.photodiodeWindowThickness = 0.47 # Casing offset to chip in mm
-            self.zChip = 1.7 # Casing offset to chip in mm
+            self.zChip = 2.7 # Casing offset to chip in mm
             
             # Z: Starting point in mm from edge of photodiode closest to laser
             # Scanning ranges Z: -10 to +10,  Y: 0.1 to +10
             self.scanZStartPt = -10
             # Length (in mm) traveled along laser axis from startPt
-            self.scanZEndPt = 20 
-            self.dZ = 0.5 # Recalculate integral every 0.5mm
+            self.scanZEndPt = 10 + self.zChip
+            self.dZ = 0.2 # Recalculate integral every 0.5mm
             
             # Y: Starting point in mm from top of photodiode
             # Scanning ranges Y: 0.1 to +10
             self.scanYStartPt = 0.1
             # Length (in mm) traveled along laser axis from startPt
-            self.scanYEndPt = 10 
-            self.dY= 0.5 # Recalculate integral every dY
+            self.scanYEndPt = 8
+            self.dY= self.dZ # Recalculate integral every dY
             
             # Mie Parameters
             self.s1 = None
@@ -286,14 +291,16 @@ class mieCalc():
         intensity = ((abs(s1)**2)/2 + (abs(s2)**2)/2)/(x**2)
         self.normIntensity = intensity/np.sum(intensity)
         
-        # Assign extinction coefficients
+        # Assign extinction coefficients, currently these aren't used
         self.qext = qext
         self.qsca = qsca
         self.qback = qback
         self.gsca = gsca
+        
 
-    def scatterPlotter(self):
-        """ Plot amplitude vs degrees 
+    def ampFuncPlotter(self):
+        """ Input: bhmie
+            Output: polar plot amplitude vs degrees 
         """
 
         # Plot parallel and perpendicular amplitude functions against angles
@@ -306,10 +313,10 @@ class mieCalc():
         for yticka in ax.yaxis.get_major_ticks():
             yticka.label1.set_fontsize(6)
         ax.grid(True)
-        name = 'log[S1(blue) & S2(orange)]vs Angle, n- '
-        name = name + str(self.complexIndex)
-        name = name + ' x-' + str(self.x)[:4]
-        ax.set_title(name,va='bottom', y=1.07, size=8)
+        name = 'log[S1(b) & S2(o)]  d='
+        name = name + str(self.diameter)[:4]
+        name = name + 'um  n=' + str(self.complexIndex)
+        ax.set_title(name,va='bottom', y=1.07, size=7)
         
         # Plot normalized intensity against angles
         ax = fig.add_subplot(212, polar=True)
@@ -319,54 +326,136 @@ class mieCalc():
         for yticka in ax.yaxis.get_major_ticks():
             yticka.label1.set_fontsize(6)
         ax.grid(True)
-        name = 'Normalized Intensity vs Angle, n- '
-        name = name + str(self.complexIndex)
-        name = name + ' x-' + str(self.x)[:4]
-        ax.set_title(name,va='bottom', y=1.07, size=8)
         
+        # Set title
+        name = 'Normalized Intensity  d='
+        name = name + str(self.diameter)[:4]
+        name = name + 'um  n=' + str(self.complexIndex)
+        ax.set_title(name,va='bottom', y=1.07, size=7)
+        
+        # Save figure
         plt.subplots_adjust(hspace=0.3)
-        savefig('mieScatterPlot.png', dpi=350, bb_inches='loose')
+        path = self.path + 'd=' + str(self.diameter)[:4]
+        path = path + 'um n=' + str(self.complexIndex) 
+        path = path + ' mieScatterPlot' + '.png'
+        
+        print path
+        savefig(path, dpi=350, bb_inches='loose')
         clf()
         
-    def scanXY(self):
+       
+    def integrator(self, theta1, theta2):
+        """ Takes 2 angles and sums the intensity between them
+        """
+        
+        if theta1 > theta2:
+            print 'Error theta1 > theta2'
+            return None
+        
+        sum = 0
+        
+        for i,ang in enumerate(self.angles):
+            if ang < theta1:
+                continue
+            elif ang >= theta1 and ang <= theta2:
+                sum = sum + self.normIntensity[i]
+            elif ang > theta2:
+                return sum
+            
+        print 'Error thetaMax < theta2'
+        return None
+                
+     
+    def xyIntensityPlotter(self):
         """ Scan over YX ranges identified in init
             Input: self.bhmie()
         """
+        
 
         # Get arrays for z and y
         arrZ = arange(self.scanZStartPt,self.scanZEndPt,self.dZ)
         arrY = arange(self.scanYStartPt,self.scanYEndPt,self.dY)
+
+        # Create arrays for 3D plot
+        zAxis = []
         
         for y in arrY:
-            
-            print '--------------',y,'--------------'
+                        
+            if DEBUG: print '--------------',y,'--------------'
+            cols = []
            
             for z in arrZ:
                 
                 if z <= 0:
-                    print 'z<0',
+                    if DEBUG: print 'z<0',
                     theta1 = pi/2 + arctan(abs(z)/y)
                     theta2 = pi/2 + arctan((abs(z)+self.zChip)/y)
                 elif z > 0 and z <= self.zChip:
-                    print 'z>0',
+                    if DEBUG: print 'z>0',
                     theta1 = arctan(y/abs(z))
                     theta2 = pi/2 + arctan((abs(z)+self.zChip)/y)
                 elif z > self.zChip:
-                    print 'z<<0',
+                    if DEBUG: print 'z<<0',
                     theta1 = arctan(y/abs(z))
                     theta2 = arctan(y/(abs(z)-self.zChip))
                 else:
-                    print 'Impossibru!'
+                    if DEBUG: print 'Impossibru!'
                     
-                print z, theta1*180/pi, theta2*180/pi     
+                # Intensity radiated onto sensing area of PD
+                observedIntensity = self.integrator(theta1, theta2)
+                cols.append(observedIntensity*100) # Convert to percentage
+
+                if DEBUG: print z, theta1*180/pi, theta2*180/pi
                 
+            zAxis.append(cols)
+                
+        # 3D surface plot of values
+        fig = plt.figure()
+        ax = Axes3D(fig) # Ugly crap required for 3D plot
+        xAxis, yAxis = meshgrid(arrZ,arrY) # Need 2D arrays
+        surf = ax.plot_surface(xAxis,yAxis,zAxis, rstride=1, cstride=1, 
+                        cmap=cm.coolwarm, linewidth=0)
+        ax.view_init(elev=7, azim=120) # Set view point
         
+        # Add a side bar to indicate color intensity and title
+        fig.colorbar(surf, shrink=0.5, aspect=5)
+        name = 'Light Incident on PD vs Particle Location d='
+        name = name + str(self.diameter)[:4]
+        name = name + 'um  n=' + str(self.complexIndex)
+        name = name + '\n\n Surface Grid Size=' + str(self.dZ)[:3] +'mm'
+        ax.set_title(name,va='bottom', y=0.97, size=12)
+        ax.set_xlabel('Distance From PD Edge (mm)')
+        ax.set_ylabel('Height Above PD (mm)')
+        ax.set_zlabel('Light Intensity Incident on PD (%)')
+        
+        # Save figure
+        path = self.path + 'd=' + str(self.diameter)[:4]
+        path = path + 'um n=' + str(self.complexIndex) 
+        path = path + ' xyIntensityPlot' + '.png'
+        print path
+        savefig(path, dpi=350)
+        clf()
+                
 
-mc = mieCalc()
-mc.bhmie()
-#mc.scatterPlotter()
+diameterRange = arange(0.5,10,0.5)
+diameterRange = insert(diameterRange,0,0.25)
 
-mc.scanXY()
+# Indices by material in order from first to last
+# 1.49+0.0j - Dioctyl phthalate (DOP) at unknown wavelength
+# 1.60+0.0j - Polystyrene latex (PSL) at 589nm
+# 1.54+0.5j - Coal dust at unknown wavelength
+indexRange = [1.49+0.0j, 1.60+0.0j, 1.54+0.5j]
+path = "D:\\GitHub\\workspace\\Clad\\output\\"
+
+
+for n in indexRange:
+    for d in diameterRange:
+
+        # Generate plots for all possible configuratins of values
+        mc = mieCalc(path,diameter=d,index=n)
+        mc.bhmie()
+        mc.ampFuncPlotter()
+        mc.xyIntensityPlotter()
 
         
 
